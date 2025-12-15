@@ -1,383 +1,506 @@
 <?php
+require_once __DIR__ . "/analisadorSemantico.php";
+require_once __DIR__ . "/GeradorCodigoAssembly.php";
+
 /**
  * ============================================================================
- * CLASSE: AnalisadorSintaticoSLR - VERSÃO FINAL FUNCIONAL
+ * AnalisadorSintaticoSLR (SLR(1)) - VERSÃO CORRIGIDA
  * ----------------------------------------------------------------------------
- * Parser SLR completo com declarações e comandos
- * 
- * GRAMÁTICA:
- * 0. S' → PROG
- * 1. PROG → DECLS CMD
- * 2. DECLS → DECL DECLS
- * 3. DECLS → ε
- * 4. DECL → TIPO id ;
- * 5. TIPO → int | char | bool
- * 6. CMD → ATRIB | IF
- * 7. ATRIB → id = EXPR ;
- * 8. IF → if ( COND ) { CMD }
- * 9. EXPR → EXPR + EXPR | EXPR * EXPR | id | const | ( EXPR )
- * 10. COND → EXPR > EXPR | EXPR < EXPR
+ * Correções principais:
+ * 1) Agora a gramática aceita LISTA de comandos (CMDS), então isso funciona:
+ *    int x;
+ *    x = 10 + 2 * 3;
+ *    if (x > 10) { x = 1; }
+ *
+ * 2) Expressões com precedência:
+ *    EXPR (+) TERM (*) FACT
+ *
+ * 3) Condições suportadas:
+ *    >  <  >=  <=  ==  !=
  * ============================================================================
  */
-
-require_once "analisadorSemantico.php";
-
 class AnalisadorSintaticoSLR {
 
-    private $semantico;
-    private $tabela_action;
-    private $tabela_goto;
-    private $tokensOriginais = [];
-    private $simbolosParser = [];
-    private $pilha = [];
-    private $pilhaTokens = [];
-    private $indice = 0;
-    private $acoes = [];
+    private Semantico $semantico;
+    private GeradorCodigoAssembly $gerador;
+
+    private array $tabela_action = [];
+    private array $tabela_goto   = [];
+
+    private array $tokensOriginais = [];
+    private array $simbolosParser  = [];
+
+    private array $pilha = [];
+    private array $pilhaTokens = [];
+
+    private int $indice = 0;
+    private array $acoes  = [];
 
     public function __construct() {
         $this->semantico = new Semantico();
+        $this->gerador   = new GeradorCodigoAssembly();
         $this->inicializarTabelas();
     }
 
-    private function inicializarTabelas() {
-        // Tabela ACTION completa e corrigida
-        $this->tabela_action = [
-            // Estado 0: Inicial
-            0 => [
-                'int' => ['shift', 2],
-                'char' => ['shift', 3],
-                'bool' => ['shift', 4],
-                'id' => ['shift', 5],
-                'if' => ['shift', 6],
-                '$' => ['reduce', 3]
-            ],
-            // Estado 1: Aceitação
-            1 => ['$' => ['accept']],
-            
-            // Estados 2,3,4: Após TIPO (int/char/bool)
-            2 => ['id' => ['shift', 7]],
-            3 => ['id' => ['shift', 7]],
-            4 => ['id' => ['shift', 7]],
-            
-            // Estado 5: Após id (atribuição)
-            5 => ['=' => ['shift', 8]],
-            
-            // Estado 6: Após if
-            6 => ['(' => ['shift', 9]],
-            
-            // Estado 7: Após TIPO id
-            7 => [';' => ['shift', 10]],
-            
-            // Estado 8: Após id =
-            8 => [
-                'id' => ['shift', 11],
-                'const' => ['shift', 12],
-                '(' => ['shift', 13]
-            ],
-            
-            // Estado 9: Após if (
-            9 => [
-                'id' => ['shift', 11],
-                'const' => ['shift', 12],
-                '(' => ['shift', 13]
-            ],
-            
-            // Estado 10: Após TIPO id ;
-            10 => [
-                'int' => ['reduce', 4],
-                'char' => ['reduce', 4],
-                'bool' => ['reduce', 4],
-                'id' => ['reduce', 4],
-                'if' => ['reduce', 4],
-                '$' => ['reduce', 4]
-            ],
-            
-            // Estados 11,12: EXPR → id | const
-            11 => [
-                '+' => ['reduce', 14],
-                '*' => ['reduce', 14],
-                ';' => ['reduce', 14],
-                ')' => ['reduce', 14],
-                '>' => ['reduce', 14],
-                '<' => ['reduce', 14]
-            ],
-            12 => [
-                '+' => ['reduce', 15],
-                '*' => ['reduce', 15],
-                ';' => ['reduce', 15],
-                ')' => ['reduce', 15],
-                '>' => ['reduce', 15],
-                '<' => ['reduce', 15]
-            ],
-            
-            // Estado 13: Após (
-            13 => [
-                'id' => ['shift', 11],
-                'const' => ['shift', 12],
-                '(' => ['shift', 13]
-            ],
-            
-            // Estado 14: Após id = EXPR
-            14 => [
-                ';' => ['shift', 15],
-                '+' => ['shift', 16],
-                '*' => ['shift', 17]
-            ],
-            
-            // Estado 15: Após id = EXPR ;
-            15 => [
-                '$' => ['reduce', 10],
-                '}' => ['reduce', 10]
-            ],
-            
-            // Estados 16,17: Operadores
-            16 => [
-                'id' => ['shift', 11],
-                'const' => ['shift', 12],
-                '(' => ['shift', 13]
-            ],
-            17 => [
-                'id' => ['shift', 11],
-                'const' => ['shift', 12],
-                '(' => ['shift', 13]
-            ],
-            
-            // Estado 18: Após if ( EXPR
-            18 => [
-                ')' => ['shift', 19],
-                '+' => ['shift', 16],
-                '*' => ['shift', 17],
-                '>' => ['shift', 20],
-                '<' => ['shift', 21]
-            ],
-            
-            // Estado 19: Após if ( COND )
-            19 => ['{' => ['shift', 22]],
-            
-            // Estados 20,21: Operadores relacionais
-            20 => [
-                'id' => ['shift', 11],
-                'const' => ['shift', 12],
-                '(' => ['shift', 13]
-            ],
-            21 => [
-                'id' => ['shift', 11],
-                'const' => ['shift', 12],
-                '(' => ['shift', 13]
-            ],
-            
-            // Estado 22: Após if ( COND ) {
-            22 => [
-                'id' => ['shift', 5],
-                'if' => ['shift', 6]
-            ],
-            
-            // Estados 23,24: EXPR + EXPR, EXPR * EXPR
-            23 => [
-                '+' => ['reduce', 12],
-                '*' => ['shift', 17],
-                ';' => ['reduce', 12],
-                ')' => ['reduce', 12],
-                '>' => ['reduce', 12],
-                '<' => ['reduce', 12]
-            ],
-            24 => [
-                '+' => ['reduce', 13],
-                '*' => ['reduce', 13],
-                ';' => ['reduce', 13],
-                ')' => ['reduce', 13],
-                '>' => ['reduce', 13],
-                '<' => ['reduce', 13]
-            ],
-            
-            // Estado 25: ( EXPR )
-            25 => [
-                ')' => ['shift', 26],
-                '+' => ['shift', 16],
-                '*' => ['shift', 17]
-            ],
-            
-            // Estado 26: ( EXPR ) completo
-            26 => [
-                '+' => ['reduce', 16],
-                '*' => ['reduce', 16],
-                ';' => ['reduce', 16],
-                ')' => ['reduce', 16],
-                '>' => ['reduce', 16],
-                '<' => ['reduce', 16]
-            ],
-            
-            // Estados 27,28: COND → EXPR > EXPR, EXPR < EXPR
-            27 => [
-                ')' => ['reduce', 17],
-                '+' => ['shift', 16],
-                '*' => ['shift', 17]
-            ],
-            28 => [
-                ')' => ['reduce', 18],
-                '+' => ['shift', 16],
-                '*' => ['shift', 17]
-            ],
-            
-            // Estado 29: if ( COND ) { CMD }
-            29 => [
-                '}' => ['shift', 30]
-            ],
-            
-            // Estado 30: IF completo
-            30 => [
-                '$' => ['reduce', 11],
-                '}' => ['reduce', 11]
-            ],
-            
-            // Estados 31,32: CMD reduções
-            31 => [
-                '$' => ['reduce', 8]
-            ],
-            32 => [
-                '$' => ['reduce', 9]
-            ],
-            
-            // Estado 33: Após DECLS
-            33 => [
-                'id' => ['shift', 5],
-                'if' => ['shift', 6]
-            ],
-            
-            // Estado 34: Após DECL
-            34 => [
-                'int' => ['shift', 2],
-                'char' => ['shift', 3],
-                'bool' => ['shift', 4],
-                'id' => ['reduce', 3],
-                'if' => ['reduce', 3],
-                '$' => ['reduce', 3]
-            ]
-        ];
-
-        // Tabela GOTO completa
-        $this->tabela_goto = [
-            0 => [
-                'PROG' => 1,
-                'DECLS' => 33,
-                'DECL' => 34,
-                'TIPO' => 35
-            ],
-            8 => ['EXPR' => 14],
-            9 => [
-                'EXPR' => 18,
-                'COND' => 36
-            ],
-            13 => ['EXPR' => 25],
-            16 => ['EXPR' => 23],
-            17 => ['EXPR' => 24],
-            20 => ['EXPR' => 27],
-            21 => ['EXPR' => 28],
-            22 => [
-                'CMD' => 29,
-                'ATRIB' => 31,
-                'IF' => 32
-            ],
-            33 => [
-                'CMD' => 37,
-                'ATRIB' => 31,
-                'IF' => 32
-            ],
-            34 => ['DECLS' => 38],
-            35 => [], // TIPO não tem GOTO adicional
-            36 => [], // COND não tem GOTO adicional
-            37 => [], // CMD após DECLS
-            38 => [] // DECLS recursivo
-        ];
-    }
-
-    public function getSemantico() {
+    public function getSemantico(): Semantico {
         return $this->semantico;
     }
 
-    public function setTokensDoLexico($tokens) {
-        $this->tokensOriginais = array_values($tokens);
-        $this->simbolosParser = [];
-        
-        foreach ($tokens as $token) {
+    public function getGerador(): GeradorCodigoAssembly {
+        return $this->gerador;
+    }
+
+    public function getAssembly(): string {
+        return $this->gerador->build();
+    }
+
+    private function inicializarTabelas(): void {
+        $this->tabela_action = [
+    0 => [
+        'id' => ['reduce', 3],
+        'if' => ['reduce', 3],
+        'int' => ['shift', 2],
+        'char' => ['shift', 1],
+        'bool' => ['shift', 4],
+        '$' => ['reduce', 3],
+    ],
+    1 => [
+        'id' => ['reduce', 6],
+    ],
+    2 => [
+        'id' => ['reduce', 5],
+    ],
+    3 => [
+        '$' => ['accept'],
+    ],
+    4 => [
+        'id' => ['reduce', 7],
+    ],
+    5 => [
+        'id' => ['reduce', 3],
+        'if' => ['reduce', 3],
+        'int' => ['shift', 2],
+        'char' => ['shift', 1],
+        'bool' => ['shift', 4],
+        '$' => ['reduce', 3],
+    ],
+    6 => [
+        'id' => ['shift', 9],
+    ],
+    7 => [
+        'id' => ['shift', 12],
+        'if' => ['shift', 11],
+        '}' => ['reduce', 9],
+        '$' => ['reduce', 9],
+    ],
+    8 => [
+        'id' => ['reduce', 2],
+        'if' => ['reduce', 2],
+        '$' => ['reduce', 2],
+    ],
+    9 => [
+        ';' => ['shift', 16],
+    ],
+    10 => [
+        'id' => ['shift', 12],
+        'if' => ['shift', 11],
+        '}' => ['reduce', 9],
+        '$' => ['reduce', 9],
+    ],
+    11 => [
+        '(' => ['shift', 18],
+    ],
+    12 => [
+        '=' => ['shift', 19],
+    ],
+    13 => [
+        'id' => ['reduce', 10],
+        'if' => ['reduce', 10],
+        '}' => ['reduce', 10],
+        '$' => ['reduce', 10],
+    ],
+    14 => [
+        'id' => ['reduce', 11],
+        'if' => ['reduce', 11],
+        '}' => ['reduce', 11],
+        '$' => ['reduce', 11],
+    ],
+    15 => [
+        '$' => ['reduce', 1],
+    ],
+    16 => [
+        'id' => ['reduce', 4],
+        'if' => ['reduce', 4],
+        'int' => ['reduce', 4],
+        'char' => ['reduce', 4],
+        'bool' => ['reduce', 4],
+        '$' => ['reduce', 4],
+    ],
+    17 => [
+        '}' => ['reduce', 8],
+        '$' => ['reduce', 8],
+    ],
+    18 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    19 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    20 => [
+        ')' => ['reduce', 25],
+        '+' => ['reduce', 25],
+        '*' => ['reduce', 25],
+        ';' => ['reduce', 25],
+        '>' => ['reduce', 25],
+        '<' => ['reduce', 25],
+        '>=' => ['reduce', 25],
+        '<=' => ['reduce', 25],
+        '==' => ['reduce', 25],
+        '!=' => ['reduce', 25],
+    ],
+    21 => [
+        ')' => ['shift', 28],
+    ],
+    22 => [
+        ')' => ['reduce', 24],
+        '+' => ['reduce', 24],
+        '*' => ['reduce', 24],
+        ';' => ['reduce', 24],
+        '>' => ['reduce', 24],
+        '<' => ['reduce', 24],
+        '>=' => ['reduce', 24],
+        '<=' => ['reduce', 24],
+        '==' => ['reduce', 24],
+        '!=' => ['reduce', 24],
+    ],
+    23 => [
+        ')' => ['reduce', 23],
+        '+' => ['reduce', 23],
+        '*' => ['reduce', 23],
+        ';' => ['reduce', 23],
+        '>' => ['reduce', 23],
+        '<' => ['reduce', 23],
+        '>=' => ['reduce', 23],
+        '<=' => ['reduce', 23],
+        '==' => ['reduce', 23],
+        '!=' => ['reduce', 23],
+    ],
+    24 => [
+        '+' => ['shift', 31],
+        '>' => ['shift', 35],
+        '<' => ['shift', 32],
+        '>=' => ['shift', 34],
+        '<=' => ['shift', 33],
+        '==' => ['shift', 30],
+        '!=' => ['shift', 29],
+    ],
+    25 => [
+        ')' => ['reduce', 21],
+        '+' => ['reduce', 21],
+        '*' => ['shift', 36],
+        ';' => ['reduce', 21],
+        '>' => ['reduce', 21],
+        '<' => ['reduce', 21],
+        '>=' => ['reduce', 21],
+        '<=' => ['reduce', 21],
+        '==' => ['reduce', 21],
+        '!=' => ['reduce', 21],
+    ],
+    26 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    27 => [
+        '+' => ['shift', 31],
+        ';' => ['shift', 38],
+    ],
+    28 => [
+        '{' => ['shift', 39],
+    ],
+    29 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    30 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    31 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    32 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    33 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    34 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    35 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    36 => [
+        'id' => ['shift', 22],
+        '(' => ['shift', 26],
+        'const' => ['shift', 20],
+    ],
+    37 => [
+        ')' => ['shift', 48],
+        '+' => ['shift', 31],
+    ],
+    38 => [
+        'id' => ['reduce', 12],
+        'if' => ['reduce', 12],
+        '}' => ['reduce', 12],
+        '$' => ['reduce', 12],
+    ],
+    39 => [
+        'id' => ['shift', 12],
+        'if' => ['shift', 11],
+        '}' => ['reduce', 9],
+        '$' => ['reduce', 9],
+    ],
+    40 => [
+        ')' => ['reduce', 19],
+        '+' => ['shift', 31],
+    ],
+    41 => [
+        ')' => ['reduce', 18],
+        '+' => ['shift', 31],
+    ],
+    42 => [
+        ')' => ['reduce', 20],
+        '+' => ['reduce', 20],
+        '*' => ['shift', 36],
+        ';' => ['reduce', 20],
+        '>' => ['reduce', 20],
+        '<' => ['reduce', 20],
+        '>=' => ['reduce', 20],
+        '<=' => ['reduce', 20],
+        '==' => ['reduce', 20],
+        '!=' => ['reduce', 20],
+    ],
+    43 => [
+        ')' => ['reduce', 15],
+        '+' => ['shift', 31],
+    ],
+    44 => [
+        ')' => ['reduce', 17],
+        '+' => ['shift', 31],
+    ],
+    45 => [
+        ')' => ['reduce', 16],
+        '+' => ['shift', 31],
+    ],
+    46 => [
+        ')' => ['reduce', 14],
+        '+' => ['shift', 31],
+    ],
+    47 => [
+        ')' => ['reduce', 22],
+        '+' => ['reduce', 22],
+        '*' => ['reduce', 22],
+        ';' => ['reduce', 22],
+        '>' => ['reduce', 22],
+        '<' => ['reduce', 22],
+        '>=' => ['reduce', 22],
+        '<=' => ['reduce', 22],
+        '==' => ['reduce', 22],
+        '!=' => ['reduce', 22],
+    ],
+    48 => [
+        ')' => ['reduce', 26],
+        '+' => ['reduce', 26],
+        '*' => ['reduce', 26],
+        ';' => ['reduce', 26],
+        '>' => ['reduce', 26],
+        '<' => ['reduce', 26],
+        '>=' => ['reduce', 26],
+        '<=' => ['reduce', 26],
+        '==' => ['reduce', 26],
+        '!=' => ['reduce', 26],
+    ],
+    49 => [
+        '}' => ['shift', 50],
+    ],
+    50 => [
+        'id' => ['reduce', 13],
+        'if' => ['reduce', 13],
+        '}' => ['reduce', 13],
+        '$' => ['reduce', 13],
+    ],
+];
+
+        $this->tabela_goto = [
+    0 => [
+        'PROG' => 3,
+        'DECLS' => 7,
+        'DECL' => 5,
+        'TIPO' => 6,
+    ],
+    5 => [
+        'DECLS' => 8,
+        'DECL' => 5,
+        'TIPO' => 6,
+    ],
+    7 => [
+        'CMDS' => 15,
+        'CMD' => 10,
+        'ATRIB' => 13,
+        'IF' => 14,
+    ],
+    10 => [
+        'CMDS' => 17,
+        'CMD' => 10,
+        'ATRIB' => 13,
+        'IF' => 14,
+    ],
+    18 => [
+        'EXPR' => 24,
+        'TERM' => 25,
+        'FACT' => 23,
+        'COND' => 21,
+    ],
+    19 => [
+        'EXPR' => 27,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    26 => [
+        'EXPR' => 37,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    29 => [
+        'EXPR' => 40,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    30 => [
+        'EXPR' => 41,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    31 => [
+        'TERM' => 42,
+        'FACT' => 23,
+    ],
+    32 => [
+        'EXPR' => 43,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    33 => [
+        'EXPR' => 44,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    34 => [
+        'EXPR' => 45,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    35 => [
+        'EXPR' => 46,
+        'TERM' => 25,
+        'FACT' => 23,
+    ],
+    36 => [
+        'FACT' => 47,
+    ],
+    39 => [
+        'CMDS' => 49,
+        'CMD' => 10,
+        'ATRIB' => 13,
+        'IF' => 14,
+    ],
+];
+    }
+
+    public function setTokensDoLexico(array $tokens): void {
+        $this->tokensOriginais = array_values($tokens ?? []);
+        $this->simbolosParser  = [];
+
+        foreach ($this->tokensOriginais as $token) {
             $tipo = $token->getTipo();
-            
+
             switch ($tipo) {
-                case 'ID':
-                    $this->simbolosParser[] = 'id';
-                    break;
-                case 'IF':
-                    $this->simbolosParser[] = 'if';
-                    break;
-                case 'INT':
-                    $this->simbolosParser[] = 'int';
-                    break;
-                case 'CHAR':
-                    $this->simbolosParser[] = 'char';
-                    break;
-                case 'BOOL':
-                    $this->simbolosParser[] = 'bool';
-                    break;
+                case 'ID':       $this->simbolosParser[] = 'id';    break;
+                case 'IF':       $this->simbolosParser[] = 'if';    break;
+                case 'INT':      $this->simbolosParser[] = 'int';   break;
+                case 'CHAR':     $this->simbolosParser[] = 'char';  break;
+                case 'BOOL':     $this->simbolosParser[] = 'bool';  break;
+
                 case 'CONST':
-                case 'DECIMAL':
-                    $this->simbolosParser[] = 'const';
-                    break;
-                case 'ATRIB':
-                    $this->simbolosParser[] = '=';
-                    break;
-                case 'SOMA':
-                    $this->simbolosParser[] = '+';
-                    break;
-                case 'MULT':
-                    $this->simbolosParser[] = '*';
-                    break;
-                case 'AP':
-                    $this->simbolosParser[] = '(';
-                    break;
-                case 'FP':
-                    $this->simbolosParser[] = ')';
-                    break;
-                case 'INIBLOCO':
-                    $this->simbolosParser[] = '{';
-                    break;
-                case 'FIMBLOCO':
-                    $this->simbolosParser[] = '}';
-                    break;
-                case 'PV':
-                    $this->simbolosParser[] = ';';
-                    break;
-                case 'MAIOR':
-                    $this->simbolosParser[] = '>';
-                    break;
-                case 'MENOR':
-                    $this->simbolosParser[] = '<';
-                    break;
+                case 'DECIMAL':  $this->simbolosParser[] = 'const'; break;
+
+                case 'ATRIB':    $this->simbolosParser[] = '=';     break;
+                case 'SOMA':     $this->simbolosParser[] = '+';     break;
+                case 'MULT':     $this->simbolosParser[] = '*';     break;
+
+                case 'AP':       $this->simbolosParser[] = '(';     break;
+                case 'FP':       $this->simbolosParser[] = ')';     break;
+
+                case 'INIBLOCO': $this->simbolosParser[] = '{';     break;
+                case 'FIMBLOCO': $this->simbolosParser[] = '}';     break;
+
+                case 'PV':       $this->simbolosParser[] = ';';     break;
+
+                case 'MAIOR':      $this->simbolosParser[] = '>';   break;
+                case 'MENOR':      $this->simbolosParser[] = '<';   break;
+                case 'MAIORIGUAL': $this->simbolosParser[] = '>=';  break;
+                case 'MENORIGUAL': $this->simbolosParser[] = '<=';  break;
+                case 'IGUAL':      $this->simbolosParser[] = '==';  break;
+                case 'DIFERENTE':  $this->simbolosParser[] = '!=';  break;
+
                 default:
+                    // tokens fora da gramática atual são ignorados
                     break;
             }
         }
-        
+
         $this->simbolosParser[] = '$';
     }
 
-    public function analisar() {
+    public function analisar(): array {
         $this->pilha = [0];
         $this->pilhaTokens = [null];
         $this->indice = 0;
-        $this->acoes = [];
+        $this->acoes  = [];
+
+        $this->gerador->reset();
+        $this->gerador->beginProgram();
 
         while (true) {
-            $estado = end($this->pilha);
-            $simbolo = $this->simbolosParser[$this->indice];
-            $tokenAtual = isset($this->tokensOriginais[$this->indice]) ? $this->tokensOriginais[$this->indice] : null;
+            $estado  = end($this->pilha);
+            $simbolo = $this->simbolosParser[$this->indice] ?? '$';
+            $tokenAtual = $this->tokensOriginais[$this->indice] ?? null;
 
             if (!isset($this->tabela_action[$estado][$simbolo])) {
                 return [
                     'success' => false,
-                    'message' => "❌ Erro sintático: símbolo '$simbolo' não esperado no estado $estado",
+                    'message' => "Erro sintático: símbolo '$simbolo' não esperado no estado $estado",
                     'actions' => $this->acoes,
-                    'pilha' => $this->pilha,
-                    'posicao' => $this->indice
+                    'pilha'   => $this->pilha,
+                    'posicao' => $this->indice,
                 ];
             }
 
@@ -388,33 +511,46 @@ class AnalisadorSintaticoSLR {
                 array_push($this->pilha, $simbolo, $acao[1]);
                 array_push($this->pilhaTokens, $tokenAtual, null);
                 $this->indice++;
-            } 
-            elseif ($acao[0] === 'reduce') {
-                $producao = $this->getReducao($acao[1]);
-                $tamanho = count($producao[1]);
+                continue;
+            }
 
-                // Coleta tokens da produção
-                $tokensProducao = [];
-                for ($i = 0; $i < $tamanho; $i++) {
-                    $idx = count($this->pilhaTokens) - ($tamanho - $i) * 2;
-                    if ($idx >= 0 && isset($this->pilhaTokens[$idx])) {
-                        $tokensProducao[] = $this->pilhaTokens[$idx];
-                    }
-                }
+            if ($acao[0] === 'reduce') {
+                $num = (int)$acao[1];
+                $producao = $this->getReducao($num);
 
-                // Análise semântica
-                try {
-                    $this->processarSemantica($acao[1], $tokensProducao);
-                } catch (Exception $e) {
+                if ($producao === null) {
                     return [
                         'success' => false,
-                        'message' => "❌ " . $e->getMessage(),
+                        'message' => "Redução inválida: r{$num}",
                         'actions' => $this->acoes,
-                        'pilha' => $this->pilha
+                        'pilha'   => $this->pilha,
                     ];
                 }
 
-                // Remove símbolos da pilha
+                [$lhs, $rhs] = $producao;
+                $tamanho = count($rhs);
+
+                // pega os tokens do RHS (1 token a cada 2 posições na pilhaTokens)
+                $tokensProducao = [];
+                for ($i = 0; $i < $tamanho; $i++) {
+                    $idx = count($this->pilhaTokens) - ($tamanho - $i) * 2;
+                    $tokensProducao[] = ($idx >= 0 && array_key_exists($idx, $this->pilhaTokens))
+                        ? $this->pilhaTokens[$idx]
+                        : null;
+                }
+
+                try {
+                    $this->processarSemantica($num, $tokensProducao);
+                    $this->processarGeracao($num, $tokensProducao);
+                } catch (Exception $e) {
+                    return [
+                        'success' => false,
+                        'message' => "" . $e->getMessage(),
+                        'actions' => $this->acoes,
+                        'pilha'   => $this->pilha,
+                    ];
+                }
+
                 for ($i = 0; $i < $tamanho; $i++) {
                     array_pop($this->pilha);
                     array_pop($this->pilha);
@@ -422,128 +558,221 @@ class AnalisadorSintaticoSLR {
                     array_pop($this->pilhaTokens);
                 }
 
-                $estado = end($this->pilha);
+                $estadoTopo = end($this->pilha);
 
-                if (!isset($this->tabela_goto[$estado][$producao[0]])) {
-                    // Se não há GOTO, pode ser epsilon ou fim de parsing
-                    if ($producao[0] === 'PROG' && $estado === 0) {
-                        // Caso especial: PROG no estado inicial
-                        array_push($this->pilha, $producao[0], 1);
-                        array_push($this->pilhaTokens, null, null);
-                    } else {
-                        return [
-                            'success' => false,
-                            'message' => "❌ Erro sintático: não há transição GOTO para '{$producao[0]}' no estado $estado",
-                            'actions' => $this->acoes,
-                            'pilha' => $this->pilha
-                        ];
-                    }
-                } else {
-                    array_push($this->pilha, $producao[0], $this->tabela_goto[$estado][$producao[0]]);
-                    array_push($this->pilhaTokens, null, null);
+                if (!isset($this->tabela_goto[$estadoTopo][$lhs])) {
+                    return [
+                        'success' => false,
+                        'message' => "Erro sintático: não há GOTO para '$lhs' no estado $estadoTopo",
+                        'actions' => $this->acoes,
+                        'pilha'   => $this->pilha,
+                    ];
                 }
-            } 
-            elseif ($acao[0] === 'accept') {
+
+                $novoEstado = $this->tabela_goto[$estadoTopo][$lhs];
+                $tokenSint = $this->sintetizarToken($num, $tokensProducao);
+
+                array_push($this->pilha, $lhs, $novoEstado);
+                array_push($this->pilhaTokens, $tokenSint, null);
+
+                continue;
+            }
+
+            if ($acao[0] === 'accept') {
+                $this->gerador->endProgram();
                 return [
                     'success' => true,
-                    'message' => "✅ Código sintaticamente correto!",
-                    'actions' => $this->acoes
+                    'message' => "Código sintaticamente correto!",
+                    'actions' => $this->acoes,
                 ];
             }
         }
     }
 
-    private function processarSemantica($numeroProducao, $tokensProducao) {
-        switch ($numeroProducao) {
-            case 4: // DECL → TIPO id ;
-                if (count($tokensProducao) >= 2) {
-                    $tipoToken = $tokensProducao[0];
-                    $idToken = $tokensProducao[1];
-                    
-                    if ($tipoToken && $idToken) {
-                        $tipo = strtoupper($tipoToken->getTipo());
-                        $var = $idToken->getLexema();
-                        $this->semantico->instalaVariavel($var, $tipo);
-                    }
+    private function sintetizarToken(int $r, array $tokens) {
+        // Precisamos manter o token do TIPO para o reduce de DECL.
+        switch ($r) {
+            case 5: // TIPO -> int
+            case 6: // TIPO -> char
+            case 7: // TIPO -> bool
+                return $tokens[0] ?? null;
+            default:
+                return null;
+        }
+    }
+
+    private function processarSemantica(int $r, array $tokens): void {
+        switch ($r) {
+            case 4: { // DECL -> TIPO id ;
+                $tipoToken = $tokens[0] ?? null;
+                $idToken   = $tokens[1] ?? null;
+                if ($tipoToken && $idToken) {
+                    $tipo = strtoupper($tipoToken->getTipo());
+                    $var  = $idToken->getLexema();
+                    $this->semantico->instalaVariavel($var, $tipo);
                 }
                 break;
-                
-            case 10: // ATRIB → id = EXPR ;
-                if (count($tokensProducao) >= 1) {
-                    $idToken = $tokensProducao[0];
-                    if ($idToken) {
-                        $var = $idToken->getLexema();
-                        $this->semantico->verificaVariavelExistente($var);
-                    }
+            }
+
+            case 12: { // ATRIB -> id = EXPR ;
+                $idToken = $tokens[0] ?? null;
+                if ($idToken) {
+                    $var = $idToken->getLexema();
+                    $this->semantico->verificaVariavelExistente($var);
                 }
+                break;
+            }
+        }
+    }
+
+    private function processarGeracao(int $r, array $tokens): void {
+        switch ($r) {
+
+            // DECL -> TIPO id ;
+            case 4: {
+                $tipoToken = $tokens[0] ?? null;
+                $idToken   = $tokens[1] ?? null;
+                if ($tipoToken && $idToken) {
+                    $tipo = strtoupper($tipoToken->getTipo());
+                    $var  = $idToken->getLexema();
+                    $this->gerador->declareVar($var, $tipo);
+                }
+                break;
+            }
+
+            // FACT -> id
+            case 24: {
+                $idToken = $tokens[0] ?? null;
+                if ($idToken) {
+                    $this->gerador->pushVar($idToken->getLexema());
+                }
+                break;
+            }
+
+            // FACT -> const
+            case 25: {
+                $cToken = $tokens[0] ?? null;
+                if ($cToken) {
+                    $this->gerador->pushConstFromLexeme($cToken->getLexema());
+                }
+                break;
+            }
+
+            // TERM -> TERM * FACT
+            case 22:
+                $this->gerador->exprMul();
+                break;
+
+            // EXPR -> EXPR + TERM
+            case 20:
+                $this->gerador->exprAdd();
+                break;
+
+            // ATRIB -> id = EXPR ;
+            case 12: {
+                $idToken = $tokens[0] ?? null;
+                if ($idToken) {
+                    $this->gerador->assignFromTopExpr($idToken->getLexema());
+                }
+                break;
+            }
+
+            // COND -> EXPR op EXPR
+            case 14: $this->gerador->beginIf('>');  break;
+            case 15: $this->gerador->beginIf('<');  break;
+            case 16: $this->gerador->beginIf('>='); break;
+            case 17: $this->gerador->beginIf('<='); break;
+            case 18: $this->gerador->beginIf('=='); break;
+            case 19: $this->gerador->beginIf('!='); break;
+
+            // IF -> if ( COND ) { CMDS }
+            case 13:
+                $this->gerador->endIf();
                 break;
         }
     }
 
-    private function getReducao($numero) {
+    private function getReducao(int $n): ?array {
+        // IDs de redução BATEM com a tabela SLR desta versão.
+        $map = [
+            1  => ['PROG',  ['DECLS', 'CMDS']],
+            2  => ['DECLS', ['DECL', 'DECLS']],
+            3  => ['DECLS', []],
+            4  => ['DECL',  ['TIPO', 'id', ';']],
+            5  => ['TIPO',  ['int']],
+            6  => ['TIPO',  ['char']],
+            7  => ['TIPO',  ['bool']],
+
+            8  => ['CMDS',  ['CMD', 'CMDS']],
+            9  => ['CMDS',  []],
+            10 => ['CMD',   ['ATRIB']],
+            11 => ['CMD',   ['IF']],
+
+            12 => ['ATRIB', ['id', '=', 'EXPR', ';']],
+            13 => ['IF',    ['if', '(', 'COND', ')', '{', 'CMDS', '}']],
+
+            14 => ['COND',  ['EXPR', '>',  'EXPR']],
+            15 => ['COND',  ['EXPR', '<',  'EXPR']],
+            16 => ['COND',  ['EXPR', '>=', 'EXPR']],
+            17 => ['COND',  ['EXPR', '<=', 'EXPR']],
+            18 => ['COND',  ['EXPR', '==', 'EXPR']],
+            19 => ['COND',  ['EXPR', '!=', 'EXPR']],
+
+            20 => ['EXPR',  ['EXPR', '+', 'TERM']],
+            21 => ['EXPR',  ['TERM']],
+
+            22 => ['TERM',  ['TERM', '*', 'FACT']],
+            23 => ['TERM',  ['FACT']],
+
+            24 => ['FACT',  ['id']],
+            25 => ['FACT',  ['const']],
+            26 => ['FACT',  ['(', 'EXPR', ')']],
+        ];
+
+        return $map[$n] ?? null;
+    }
+
+    // ===== getters usados no index =====
+
+    public function getTerminals(): array {
+        return ['id','if','int','char','bool','(',')','const','+','*','=','{','}',';','>','<','>=','<=','==','!=','$'];
+    }
+
+    public function getNonTerminals(): array {
+        return ['PROG','DECLS','DECL','TIPO','CMDS','CMD','ATRIB','IF','EXPR','TERM','FACT','COND'];
+    }
+
+    public function getActionTable(): array { return $this->tabela_action; }
+    public function getGotoTable(): array { return $this->tabela_goto; }
+    public function getGramatica(): array {
         return [
-            1 => ['PROG', ['DECLS', 'CMD']],
-            2 => ['DECLS', ['DECL', 'DECLS']],
-            3 => ['DECLS', []],
-            4 => ['DECL', ['TIPO', 'id', ';']],
-            5 => ['TIPO', ['int']],
-            6 => ['TIPO', ['char']],
-            7 => ['TIPO', ['bool']],
-            8 => ['CMD', ['ATRIB']],
-            9 => ['CMD', ['IF']],
-            10 => ['ATRIB', ['id', '=', 'EXPR', ';']],
-            11 => ['IF', ['if', '(', 'COND', ')', '{', 'CMD', '}']],
-            12 => ['EXPR', ['EXPR', '+', 'EXPR']],
-            13 => ['EXPR', ['EXPR', '*', 'EXPR']],
-            14 => ['EXPR', ['id']],
-            15 => ['EXPR', ['const']],
-            16 => ['EXPR', ['(', 'EXPR', ')']],
-            17 => ['COND', ['EXPR', '>', 'EXPR']],
-            18 => ['COND', ['EXPR', '<', 'EXPR']]
-        ][$numero];
-    }
-
-    public function getTerminals() {
-        return ['id', 'if', 'int', 'char', 'bool', '(', ')', 'const', '+', '*', '=', '{', '}', ';', '>', '<', '$'];
-    }
-
-    public function getNonTerminals() {
-        return ['PROG', 'DECLS', 'DECL', 'TIPO', 'CMD', 'ATRIB', 'IF', 'EXPR', 'COND'];
-    }
-
-    public function getActionTable() {
-        return $this->tabela_action;
-    }
-
-    public function getGotoTable() {
-        return $this->tabela_goto;
-    }
-
-    public function getGramatica() {
-        return [
-            "1. PROG → DECLS CMD",
-            "2. DECLS → DECL DECLS",
-            "3. DECLS → ε (vazio)",
-            "4. DECL → TIPO id ;",
-            "5. TIPO → int",
-            "6. TIPO → char",
-            "7. TIPO → bool",
-            "8. CMD → ATRIB",
-            "9. CMD → IF",
-            "10. ATRIB → id = EXPR ;",
-            "11. IF → if ( COND ) { CMD }",
-            "12. EXPR → EXPR + EXPR",
-            "13. EXPR → EXPR * EXPR",
-            "14. EXPR → id",
-            "15. EXPR → const",
-            "16. EXPR → ( EXPR )",
-            "17. COND → EXPR > EXPR",
-            "18. COND → EXPR < EXPR"
+            "1.  PROG  → DECLS CMDS",
+            "2.  DECLS → DECL DECLS",
+            "3.  DECLS → ε",
+            "4.  DECL  → TIPO id ;",
+            "5.  TIPO  → int",
+            "6.  TIPO  → char",
+            "7.  TIPO  → bool",
+            "8.  CMDS  → CMD CMDS",
+            "9.  CMDS  → ε",
+            "10. CMD   → ATRIB",
+            "11. CMD   → IF",
+            "12. ATRIB → id = EXPR ;",
+            "13. IF    → if ( COND ) { CMDS }",
+            "14. COND  → EXPR >  EXPR",
+            "15. COND  → EXPR <  EXPR",
+            "16. COND  → EXPR >= EXPR",
+            "17. COND  → EXPR <= EXPR",
+            "18. COND  → EXPR == EXPR",
+            "19. COND  → EXPR != EXPR",
+            "20. EXPR  → EXPR + TERM",
+            "21. EXPR  → TERM",
+            "22. TERM  → TERM * FACT",
+            "23. TERM  → FACT",
+            "24. FACT  → id",
+            "25. FACT  → const",
+            "26. FACT  → ( EXPR )",
         ];
     }
-
-    public function getAcoes() {
-        return $this->acoes;
-    }
+    public function getAcoes(): array { return $this->acoes; }
 }
-?>

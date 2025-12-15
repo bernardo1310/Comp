@@ -1,69 +1,29 @@
 <?php
-/**
- * =================================================================
- * CLASSE: Token
- * -----------------------------------------------------------------
- * Representa um token identificado pelo analisador léxico.
- *
- * ATRIBUTOS:
- * - $tipo : categoria do token (ID, IF, CONST, ATR, etc.)
- * - $lexema : a sequência de caracteres reconhecida
- * - $pos : posição no código-fonte
- *
- * IMPORTÂNCIA:
- * - É a unidade básica que o analisador léxico entrega ao parser.
- * - Facilita a comunicação entre os módulos do compilador.
- * - Permite rastreamento de erros através da posição.
- * =================================================================
- */
 class Token {
-    private $tipo;
-    private $lexema;
-    private $pos;
+    private string $tipo;
+    private string $lexema;
+    private int $pos;
+    private int $linha;
+    private int $col;
 
-    /**
-     * Construtor da classe Token
-     * 
-     * @param string $tipo - Categoria do token (IF, ID, CONST, etc.)
-     * @param string $lexema - Sequência de caracteres original
-     * @param int $pos - Posição no código-fonte
-     */
-    public function __construct($tipo, $lexema, $pos) {
-        $this->tipo = $tipo;
-        $this->lexema = $lexema;
-        $this->pos = $pos;
+    public function __construct($tipo, $lexema, $pos, $linha = 1, $col = 1) {
+        $this->tipo   = (string)$tipo;
+        $this->lexema = (string)$lexema;
+        $this->pos    = (int)$pos;
+        $this->linha  = (int)$linha;
+        $this->col    = (int)$col;
     }
 
-    /**
-     * Retorna o tipo/categoria do token
-     * @return string
-     */
-    public function getTipo() {
-        return $this->tipo;
-    }
+    public function getTipo()   { return $this->tipo; }
+    public function getLexema() { return $this->lexema; }
+    public function getPos()    { return $this->pos; }
 
-    /**
-     * Retorna o lexema (sequência original de caracteres)
-     * @return string
-     */
-    public function getLexema() {
-        return $this->lexema;
-    }
+    // NOVO
+    public function getLinha()  { return $this->linha; }
+    public function getCol()    { return $this->col; }
 
-    /**
-     * Retorna a posição do token no código-fonte
-     * @return int
-     */
-    public function getPos() {
-        return $this->pos;
-    }
-
-    /**
-     * Representação em string do token para debug/exibição
-     * @return string
-     */
     public function __toString() {
-        return "[{$this->tipo}, '{$this->lexema}', pos={$this->pos}]";
+        return "[{$this->tipo}, '{$this->lexema}', pos={$this->pos}, linha={$this->linha}, col={$this->col}]";
     }
 }
 ?>

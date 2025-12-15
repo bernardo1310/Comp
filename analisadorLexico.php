@@ -2,83 +2,99 @@
 require_once("token.php");
 require_once("lexico.php");
 
-/**
- * ============================================================================
- * CLASSE: AnalisadorLexico
- * ----------------------------------------------------------------------------
- * Realiza a análise léxica da cadeia de entrada utilizando o AFD definido em Lexico.
- *
- * - Percorre a string símbolo a símbolo.
- * - Utiliza transições do AFD para identificar tokens.
- * - Armazena tokens produzidos e erros léxicos.
- * ============================================================================
- */
 class AnalisadorLexico {
-    private $tokens = [];
-    private $erros = [];
-    private $entrada = "";
-    private $pos = 0;
-    private $ultimoTokenIndex = -1;
+    private array $tokens = [];
+    private array $erros = [];
+    private string $entrada = "";
+    private int $pos = 0;
+    private int $ultimoTokenIndex = -1;
 
-    public function analisar($entrada) {
+    public function analisar($entrada): void {
         $this->tokens = [];
         $this->erros = [];
-        $this->entrada = $entrada;
+        $this->entrada = (string)$entrada;
         $this->pos = 0;
+        $this->ultimoTokenIndex = -1; // <<<<<< IMPORTANTÍSSIMO
+
         $estado = "q0";
         $lexema = "";
         $posTokenInicio = 0;
 
+        // controle de linha/coluna
+        $linha = 1;
+        $col = 1;
+        $linhaIniToken = 1;
+        $colIniToken = 1;
+
         $transicoes = Lexico::getTransicoes();
         $finais = Lexico::getFinais();
 
-        while ($this->pos < strlen($entrada)) {
-            $char = $entrada[$this->pos];
+        $len = strlen($this->entrada);
 
-            // Verifica se existe transição para o caractere atual
+        while ($this->pos < $len) {
+            $char = $this->entrada[$this->pos];
+
             if (isset($transicoes[$estado][$char])) {
-                $estado = $transicoes[$estado][$char];
+                // marca início do token ao capturar o primeiro char do lexema
                 if ($lexema === "") {
                     $posTokenInicio = $this->pos;
+                    $linhaIniToken  = $linha;
+                    $colIniToken    = $col;
                 }
+
+                $estado = $transicoes[$estado][$char];
                 $lexema .= $char;
+
+                // avança posição + atualiza linha/col
                 $this->pos++;
-            } 
-            // Se não há transição, verifica se o estado atual é final
-            elseif (isset($finais[$estado])) {
-                // Reconhece o token acumulado
-                if ($finais[$estado] !== "WS" && $lexema !== "") {
-                    $this->tokens[] = new Token($finais[$estado], $lexema, $posTokenInicio);
+                if ($char === "\n") {
+                    $linha++;
+                    $col = 1;
+                } else {
+                    $col++;
                 }
-                // Reseta para processar o caractere atual novamente
+            }
+            elseif (isset($finais[$estado])) {
+                // fecha token
+                if ($finais[$estado] !== "WS" && $lexema !== "") {
+                    $this->tokens[] = new Token($finais[$estado], $lexema, $posTokenInicio, $linhaIniToken, $colIniToken);
+                }
+
+                // reseta para reprocessar char atual
                 $lexema = "";
                 $estado = "q0";
-                // NÃO incrementa $this->pos, reprocessa o caractere atual
-            } 
-            // Erro léxico: não há transição e não é estado final
+            }
             else {
-                $this->erros[] = "Erro léxico: caractere inválido '" . $char . "' próximo de '" . $lexema . "' na posição " . $this->pos;
+                $this->erros[] =
+                    "Erro léxico: caractere inválido '" . $char . "' próximo de '" . $lexema .
+                    "' na posição " . $this->pos . " (linha {$linha}, col {$col})";
+
+                // reseta e consome char inválido
                 $lexema = "";
                 $estado = "q0";
                 $this->pos++;
+
+                if ($char === "\n") {
+                    $linha++;
+                    $col = 1;
+                } else {
+                    $col++;
+                }
             }
         }
 
-        // Verifica se há token pendente ao final da entrada
+        // token pendente no final
         if (isset($finais[$estado]) && $finais[$estado] !== "WS" && $lexema !== "") {
-            $this->tokens[] = new Token($finais[$estado], $lexema, $posTokenInicio);
+            $this->tokens[] = new Token($finais[$estado], $lexema, $posTokenInicio, $linhaIniToken, $colIniToken);
         } elseif ($lexema !== "" && !isset($finais[$estado])) {
-            $this->erros[] = "Erro léxico: token incompleto '" . $lexema . "' na posição " . $posTokenInicio;
+            $this->erros[] =
+                "Erro léxico: token incompleto '" . $lexema . "' na posição " . $posTokenInicio .
+                " (linha {$linhaIniToken}, col {$colIniToken})";
         }
     }
 
-    public function getTokens() {
-        return $this->tokens;
-    }
-
-    public function getErros() {
-        return $this->erros;
-    }
+    public function getTokens() { return $this->tokens; }
+    public function getErros()  { return $this->erros; }
 
     public function nextToken() {
         $this->ultimoTokenIndex++;
@@ -96,15 +112,13 @@ class AnalisadorLexico {
         return null;
     }
 
-    public function reset() {
+    public function reset(): void {
         $this->ultimoTokenIndex = -1;
     }
 
-    public function __toString() {
+    public function __toString(): string {
         $out = "";
-        foreach ($this->tokens as $t) {
-            $out .= $t . "\n";
-        }
+        foreach ($this->tokens as $t) $out .= $t . "\n";
         return $out;
     }
 }
